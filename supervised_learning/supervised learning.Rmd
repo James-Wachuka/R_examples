@@ -1,0 +1,372 @@
+---
+title: "supervised learning in R"
+author: "Author:James"
+output:
+  html_document: 
+    theme: united
+  html_notebook: 
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 5
+    theme: united
+  pdf_document: default
+  word_document: default
+---
+
+### Supervised Learning in R
+This notebook contains supervised learning exercises adopted from the book *BEGINNING DATA SCIENCE IN R by Thomas Mailund*
+
+The datasets to use for these exercises are the *breastcancer* and *cars*. These datasets are built-in. Also a number of libraries are required for these exercies. They include libraries for data manipulation and libraries for supervised learning packages
+
+```{r}
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(mlbench)
+library(ggrepel)
+library(ggthemes)
+library(purrr)
+library(party)
+library(randomForest)
+library(nnet)
+library(kernlab)
+library(knitr)
+```
+
+#### Exercise 1
+For this example we are going to use the cars data to fit higher degree polynomials and use training and testing data to see how *line* and *polynomial* models compare. At which degree do we get a better generalization?
+```{r}
+# cars dataset
+data(cars)
+# sampling our cars dataset to get test and training data
+sampled_cars<-cars%>%mutate(training=sample(0:1,nrow(cars),replace=TRUE))
+sampled_cars%>%head
+training_data<-cars[1:25,] # first 25 data points  for training and the rest for testing
+test_data<-cars[26:50,]
+```
+
+Now using the formula lm(), we are going to fit the models and use higher degree polynomials
+```{r}
+# line model
+line<-training_data%>%lm(dist~speed,data = .)
+# polynomial
+poly<-training_data%>%lm(dist~speed+I((speed^2)+(speed^3)+(speed^4)+(speed^5)),data = .)
+# RMSE function for evaluating our which models
+rmse<-function(x,t)sqrt(mean(sum((t-x)^2)))
+rmse(predict(line,test_data),test_data$dist)
+rmse(predict(poly,test_data),test_data$dist)
+```
+*As seen from above output when we fit the model using a higher degree polynomial we get a better generalization from the  RSME*
+
+*Using a random sample gives different accuracy as seen below*
+```{r}
+training_data<-sampled_cars%>%filter(training==1)
+test_data<-sampled_cars%>%filter(training==0)
+rmse(predict(line,test_data),test_data$dist)
+rmse(predict(poly,test_data),test_data$dist)
+```
+
+#### Exercise 2
+We are  going to create a function *prediction_summary()* that computes:
+
+* accuracy
+* specificity(true negative rate)
+* sensitivity(true positive rate)
+* false omission rate(false negatives divided by all predicted negatives)
+* negative predicted value(true negatives divided by predicted negatives)
+* positive predicted value(true positives divided by predicted positives)
+* false discovery rate(false positives divided by all predicted positives)
+```{r}
+accuracy<-function(confusion_matrix)sum(diag(confusion_matrix))/sum(confusion_matrix)
+specificity<-function(confusion_matrix)confusion_matrix[1,1]/(confusion_matrix[1,1]+confusion_matrix[1,2])
+sensitivity<-function(confusion_matrix)confusion_matrix[2,2]/(confusion_matrix[2,1]+confusion_matrix[2,2])
+false_omission_rate<-function(confusion_matrix)confusion_matrix[2,1]/sum(confusion_matrix[,1])
+negative_predicted_value<-function(confusion_matrix)confusion_matrix[1,1]/sum(confusion_matrix[,1])
+positive_predicted_value<-function(confusion_matrix)confusion_matrix[2,2]/sum(confusion_matrix[,2])
+false_discovery_rate<-function(confusion_matrix)confusion_matrix[1,2]/sum(confusion_matrix[,2])
+prediction_summary<-function(confusion_matrix)
+  c('Accuracy'=accuracy(confusion_matrix),
+    'Specificity'=specificity(confusion_matrix),
+    'Sensitivity'=sensitivity(confusion_matrix),
+    'false_omission_rate'=false_omission_rate(confusion_matrix),
+    'negative_predicted_value'=negative_predicted_value(confusion_matrix),
+    'positive_predicted_value'=positive_predicted_value(confusion_matrix),
+    'false_discovery_rate'=false_discovery_rate(confusion_matrix))
+```
+
+# Exercise 3
+Here we use the *glm()* function to predict the training and testing data for breast cancer data. We are going to use it to make predictions for training and test data. We will randomly split the data into these two classes. Finally we will use the *prediction_summary()* function we created earlier to evaluate all the measures of the model
+```{r}
+#  format the Cl.thickness and and cell.size as numerical variables for optimizing the glm() function
+formatted_cancer<-BreastCancer%>%
+  mutate(Cl.thickness.numeric=as.numeric(as.character(Cl.thickness)),
+         Cell.size.numeric=as.numeric(as.character(Cell.size)))%>%
+# sampling data to create training and testing classes
+  mutate(Istraining=sample(0:1,nrow(formatted_data),replace=TRUE))%>%
+# create a class column for test and training data  
+  mutate(train_test_class=ifelse(Istraining==0,'test','training'))
+# creating training and testing data
+training_data<-formatted_cancer[1:500,] # first 400 data points  for training and the rest for testing
+test_data<-formatted_cancer[501:699,]
+formatted_cancer%>%head
+```
+
+```{r}
+# fitting the model
+fitted_model<-training_data%>%
+  glm(Istraining~Cl.thickness.numeric+Cell.size.numeric,data=.)
+# getting actual predictions and comparing them with actual data
+classify<-function(probability)
+  ifelse(probability<0.5,'test','training')
+classified<-classify(predict(fitted_model,test_data))
+table(test_data$train_test_class,classified,dnn=c('Data','Predictions'))
+# evaluating the model using the prediction_summary() function
+prediction_summary(table(test_data$Istraining,classified))
+
+```
+We started by creating a sampled dataset containing random rows as training and testing classes. Then we split the dataset to training and testing and finally we used the predcition_summary() function to evaluate the model.Accuracy for this model is low because we sampled the training and testing classes randomly, because there is not much correlation between the target and the independent variables.
+Try including the variable *train_test_class* to the formula. The accuracy becomes 1 because of direct correlation between *Istraining* and *train_test_class*
+
+#### Exercise 4(Decision trees)
+Here we'll use the breastcancer data to predict the tumour class, but including more explanatory variables. We'll use cross-validation and explore how it affects prediction accuracy. We'll build the model using *ctree()* function.  we'll also create a function *prediction_accuracy_dt()* for accuracy of the model
+
+```{r}
+#permute rows
+permute_rows<-function(df)df[sample(1:nrow(df)),]
+#group data
+group_data<-function(df,n){
+  groups<-rep(1:n,each=nrow(df)/n)
+  split(df,groups)
+}
+# cross validation
+cross_val_grps<-function(grouped_df){
+  result<-vector(mode='list',length = length(grouped_df))
+  for(i in seq_along(grouped_df)){
+    result[[i]]<-grouped_df[-i]%>%do.call('rbind',.)
+    
+  }
+  result
+}
+# cross validation splits
+cross_validation_split<-function(grouped_df){
+  result<-vector(mode='list',length=length(grouped_df))
+  for(i in seq_along(grouped_df)){
+    training<-grouped_df[-i]%>%do.call('rbind',.)
+    test<-grouped_df[[i]]
+    result[[i]]<-list(training=training,test=test)
+    
+    
+  }
+  result
+}
+```
+
+
+```{r}
+# selecting random testing and training data
+random_groups<-function(n,probs){
+  probs<-probs/sum(probs)
+  g<-findInterval(seq(1,0,length=n),c(0, cumsum(probs)),
+                  rightmost.closed = TRUE)
+  names(probs)[sample(g)]
+  
+}
+partition<-function(df,n,probs){
+  replicate(n,split(df,random_groups(nrow(df),probs)),FALSE)
+  
+}
+```
+
+
+```{r}
+# function for prediction accuracy of the decision tree
+prediction_accuracy_dt<-function(test_and_training){
+  result <- vector(mode = "numeric", 
+                   length = length(test_and_training))
+  for (i in seq_along(test_and_training)){
+    training<-test_and_training[[i]]$training
+    test<-test_and_training[[i]]$test
+    # include extra variables in the formula
+    model<-training%>%ctree(Class~Cl.thickness.numeric+Cell.size+Cell.shape+Marg.adhesion+Bare.nuclei,data=.)
+    predictions<-(predict(model,test))
+    classify<-function(probability)
+      ifelse(probability=='benign','benign','malignant')
+    classified<-classify(predictions)
+    targets<-test$Class
+    confusion_matrix<-table(test$Class,classified)
+    result[i]<-accuracy(confusion_matrix)
+    
+  }
+  result
+}
+```
+
+
+```{r}
+# result of the model(using cross-validation)
+formatted_cancer%>%
+  permute_rows%>%
+  group_data(3)%>%
+  cross_validation_split%>%
+  prediction_accuracy_dt
+# result of the model(using random selection of training and testing data)
+random_permutted<-formatted_cancer%>%partition(3,c(training=0.5,test=0.5))
+random_permutted%>%prediction_accuracy_dt
+```
+
+#### Exercise 5(Random Forests)
+This example is implemented as the Decision tree example, but we'll use the *randomForest()* function. We will write a function for *prediction_accuracy_rf* but use *randomForest()* for the formula
+
+```{r}
+# function for prediction accuracy of the random forest
+prediction_accuracy_rf<-function(test_and_training){
+  result <- vector(mode = "numeric", 
+                   length = length(test_and_training))
+  for (i in seq_along(test_and_training)){
+    training<-test_and_training[[i]]$training
+    test<-test_and_training[[i]]$test
+    # include extra variables in the formula
+    model<-training%>%randomForest(Class~Cl.thickness.numeric+Cell.size+Cell.shape+Marg.adhesion+Mitoses,data=.)
+    predictions<-(predict(model,test))
+    classify<-function(probability)
+      ifelse(probability=='benign','benign','malignant')
+    classified<-classify(predictions)
+    targets<-test$Class
+    confusion_matrix<-table(test$Class,classified)
+    result[i]<-accuracy(confusion_matrix)
+    
+  }
+  result
+}
+```
+
+
+```{r}
+# result of the model(using cross-validation)
+formatted_cancer%>%
+  permute_rows%>%
+  group_data(3)%>%
+  cross_validation_split%>%
+  prediction_accuracy_rf
+# result of the model(using random selection of training and testing data)
+random_permutted<-formatted_cancer%>%partition(3,c(training=0.5,test=0.5))
+random_permutted%>%prediction_accuracy_rf
+```
+Using cross-validatin we get a better accuracy
+
+#### Exercise 6(Neural network)
+The size parameter for the *nnet()* function specicifies the complexity of the model.We are going to test how the accuracy depends on this variable. We'll use random sampling to obatin the test and training data.Also we need to implement a *prediction_accuracy_nnet()*function using the *nnet()* function with different *size=* parameters
+
+```{r}
+# function for prediction accuracy of the neural network 
+prediction_accuracy_nnet<-function(test_and_training){
+  result <- vector(mode = "numeric", 
+                   length = length(test_and_training))
+  for (i in seq_along(test_and_training)){
+    training<-test_and_training[[i]]$training
+    test<-test_and_training[[i]]$test
+    # include extra variables in the formula
+    model<-training%>%nnet(Class~Cl.thickness.numeric+Cell.size+Cell.shape+Marg.adhesion+Mitoses,data=.,size=2)
+    predictions<-(predict(model,test))
+    classify<-function(probability)
+      ifelse(probability=='benign','benign','malignant')
+    classified<-classify(predictions)
+    targets<-test$Class
+    confusion_matrix<-table(test$Class,classified)
+    result[i]<-accuracy(confusion_matrix)
+    
+  }
+  result
+}
+
+```
+
+```{r}
+# result of the model(using random selection of training and testing data)
+random_permutted<-formatted_cancer%>%partition(3,c(training=0.5,test=0.5))
+random_permutted%>%prediction_accuracy_nnet
+# try different value for size = parameter and compare
+```
+
+
+#### Exercise 7(Support vector machines)
+Here we'll implement the model using *ksvm()* function. We will write a function similar to the ones we've used earlier
+
+```{r}
+# function for prediction accuracy of the suppor vector machines
+prediction_accuracy_svm<-function(test_and_training){
+  result <- vector(mode = "numeric", 
+                   length = length(test_and_training))
+  for (i in seq_along(test_and_training)){
+    training<-test_and_training[[i]]$training
+    test<-test_and_training[[i]]$test
+    # include extra variables in the formula
+    model<-training%>%ksvm(Class~Cl.thickness.numeric+Cell.size+Cell.shape+Marg.adhesion+Mitoses,data=.)
+    predictions<-(predict(model,test))
+    classify<-function(probability)
+      ifelse(probability=='benign','benign','malignant')
+    classified<-classify(predictions)
+    targets<-test$Class
+    confusion_matrix<-table(test$Class,classified)
+    result[i]<-accuracy(confusion_matrix)
+    
+  }
+  result
+}
+```
+
+
+```{r}
+# result of the model(using cross-validation)
+formatted_cancer%>%
+  permute_rows%>%
+  group_data(3)%>%
+  cross_validation_split%>%
+  prediction_accuracy_rf
+# result of the model(using random selection of training and testing data)
+random_permutted<-formatted_cancer%>%partition(3,c(training=0.5,test=0.5))
+random_permutted%>%prediction_accuracy_svm
+```
+
+
+#### Exercise 8(Naive Bayes)
+We'll implement the model using *naiveBayes()* function
+
+```{r}
+# function for prediction accuracy of the Naive Bayes model
+prediction_accuracy_nb<-function(test_and_training){
+  result <- vector(mode = "numeric", 
+                   length = length(test_and_training))
+  for (i in seq_along(test_and_training)){
+    training<-test_and_training[[i]]$training
+    test<-test_and_training[[i]]$test
+    # include extra variables in the formula
+    model<-training%>%naiveBayes(Class~Cl.thickness.numeric+Cell.size+Cell.shape+Marg.adhesion+Mitoses,data=.)
+    predictions<-(predict(model,test))
+    classify<-function(probability)
+      ifelse(probability=='benign','benign','malignant')
+    classified<-classify(predictions)
+    targets<-test$Class
+    confusion_matrix<-table(test$Class,classified)
+    result[i]<-accuracy(confusion_matrix)
+    
+  }
+  result
+}
+```
+
+
+```{r}
+# result of the model(using cross-validation)
+formatted_cancer%>%
+  permute_rows%>%
+  group_data(3)%>%
+  cross_validation_split%>%
+  prediction_accuracy_rf
+# result of the model(using random selection of training and testing data)
+random_permutted<-formatted_cancer%>%partition(3,c(training=0.5,test=0.5))
+random_permutted%>%prediction_accuracy_svm
+```
+
+#### Conclusion 
+Generally all the model give reliable predictions.The higher prediction values can be attributed to overfitting of the data. Try and include extra variables in the formulas to improve the models and reduce overfitting
