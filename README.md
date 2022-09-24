@@ -1,2 +1,2 @@
 #### R_for_data_science
-examples and exercises for data science in R:
+R-data science exercices and examples
